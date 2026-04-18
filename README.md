@@ -1,6 +1,6 @@
 # PlagiarismAI — Mini Project
 
-A polished, end-to-end plagiarism detection and rewriting system built for academic authenticity evaluation and writing assistance. This repository combines a Flask web application with dataset generation and model training utilities, making it ideal for students, educators, and developers who want a self-contained plagiarism analysis workflow.
+A polished, end-to-end plagiarism detection and rewrite assistant built for academic authenticity evaluation and writing support. This repository combines a Flask web application with dataset generation utilities and a model training pipeline, making it easy to run, retrain, and extend.
 
 **Authors:** Manisha, Joita, Debasmita, Suchitra
 
@@ -9,36 +9,42 @@ A polished, end-to-end plagiarism detection and rewriting system built for acade
 ## 🌟 Project Overview
 
 `PlagiarismAI` is designed to:
-- detect text similarity and plagiarism using machine learning
-- analyze sentence-level similarity with TF-IDF and custom features
-- generate readable rewritten text that reduces plagiarism risk
-- provide a clean web interface for easy use and review
+- detect text similarity and plagiarism using a trained classifier
+- analyze sentence-level and corpus-level similarity
+- generate rewritten text that preserves meaning while reducing plagiarism risk
+- provide a responsive browser UI for quick review, comparison, and history
 
 The core components include:
-- `plagiarism_app/` — Flask application and frontend UI
-- data generation scripts for synthetic datasets
-- model training pipeline that outputs reusable `.pkl` artifacts
+- `plagiarism_app/` — Flask web application, API endpoints, and frontend UI
+- `plagiarism_app/train_model.py` — training script for model artifacts
+- `plagiarism_app/models/` — serialized model, vectorizer, encoder, and metadata
+- dataset and generation scripts for experimentation and retraining
 
 ---
 
-## 🚀 Web Application (`plagiarism_app`)
+## ⚙️ Prerequisites
 
-The Flask app serves a modern plagiarism checker with a responsive UI and API endpoints for checking, comparing, and rewriting text.
+Recommended Python version: `3.10+`
 
-### Features
+Install the main dependencies before running the app:
 
-- ✅ **Machine learning powered plagiarism detection**
-  - loads a trained model from `plagiarism_app/models`
-  - uses TF-IDF vectorization and engineered similarity features
-- ✅ **Text rewrite assistant**
-  - rewrites plagiarized or similar sentences into more original wording
-  - supports sentence-level analysis and phrase substitution
-- ✅ **Clean browser experience**
-  - lightweight UI with history tracking and quick copy support
-- ✅ **Health and status endpoints**
-  - includes `/api/health` for model readiness checks
+```bash
+python -m venv .venv
+source .venv/Scripts/activate  # Windows PowerShell: .\.venv\Scripts\Activate.ps1
+pip install flask pandas numpy scipy scikit-learn joblib
+```
 
-### Run the application
+If you want optional OpenAI rewriting support, also install:
+
+```bash
+pip install openai
+```
+
+---
+
+## 🚀 Run the Application
+
+Start the Flask app from the `plagiarism_app` folder:
 
 ```bash
 cd plagiarism_app
@@ -51,83 +57,87 @@ Then open your browser at:
 http://localhost:5000
 ```
 
-> Note: Keep the trained files in `plagiarism_app/models` so the app can load the model, vectorizer, and metadata.
+> Note: The app expects model artifacts in `plagiarism_app/models/`.
 
 ---
 
 ## 🧠 Model Training
 
-The training script builds the classification pipeline and persists all required artifacts.
+The training script creates the classifier pipeline and saves required artifacts for the web app.
 
-### Available files saved during training
+### Saved artifacts
 
 - `plagiarism_model.pkl` — trained classifier model
 - `tfidf_vectorizer.pkl` — TF-IDF vectorizer
-- `label_encoder.pkl` — label encoder for transformation metadata
-- `model_metadata.pkl` — metrics and model configuration
+- `label_encoder.pkl` — label encoder
+- `model_metadata.pkl` — training summary and metadata
 
-### Train the model
+### Train with a dataset
 
 ```bash
 cd plagiarism_app
 python train_model.py
 ```
 
-If you want to use a smaller dataset for faster training:
+If you want to train on a smaller sample for faster iteration:
 
 ```bash
 python train_model.py --sample 200000
 ```
 
-> Optional: set `OPENAI_API_KEY` to enable higher-quality sentence rewriting via OpenAI. When configured, the app uses the API for reconstruction; otherwise it falls back to local heuristic rewriting.
+The script auto-detects available dataset files if the default path is missing.
 
 ---
 
 ## 📂 Dataset and Utility Scripts
 
-This repository includes tools for dataset generation and paragraph rewriting.
+This repository includes tools for generating training data and testing rewrite behavior.
 
 ### `generate_dataset.py`
 
-Creates a dataset file such as `dataset.csv` for model training and experimentation.
+Generates the default `dataset.csv` file used for training and experimentation.
 
 ```bash
 python generate_dataset.py
 ```
 
+### `generate_paragraph_dataset.py`
+
+Creates paragraph-level datasets for broader similarity and rewrite testing.
+
+```bash
+python generate_paragraph_dataset.py
+```
+
 ### `rewrite_para.py`
 
-A lightweight script for testing text rewriting locally without starting the Flask app.
+Runs a local rewrite test outside of the Flask UI.
 
 ```bash
 python rewrite_para.py
 ```
 
-### `generate_paragraph_dataset.py`
-
-Generates larger paragraph-level datasets to support broader sentence similarity scenarios.
-
 ---
 
 ## 🧩 Repository Structure
 
-- `dataset.csv` — default generated dataset
-- `paragraph_dataset*.csv` — paragraph-based training datasets
-- `plagiarism_app/` — Flask app, training logic, and web UI
-- `plagiarism_app/models/` — model artifacts
-- `README.md` — this project documentation
+- `dataset.csv` — generated training dataset
+- `paragraph_dataset*.csv` — paragraph-based dataset variants
+- `plagiarism_app/` — web app, model training, and UI files
+- `plagiarism_app/models/` — trained model artifacts
+- `README.md` — project documentation
 
 ---
 
-## ✅ Usage Notes
+## 📌 Usage Notes
 
-- Keep required model files in `plagiarism_app/models/` for the app to run.
-- If the model artifacts are removed, regenerate them with `python train_model.py`.
-- You can customize datasets using the generation scripts before retraining.
+- Keep the necessary model files in `plagiarism_app/models/` for the web app to work.
+- If you remove the model artifacts, rerun `python train_model.py`.
+- Configure `OPENAI_API_KEY` only if you want optional GPT-based rewrite enhancements.
 
 ---
 
 ## 📄 License
 
-This repository is provided for educational and experimental use. Please respect the authorship and credit the project contributors when reusing or sharing the code.
+This project is licensed under the MIT License. See `LICENSE` for details.
 
