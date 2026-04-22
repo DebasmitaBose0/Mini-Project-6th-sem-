@@ -494,6 +494,50 @@ HUMAN_TRANSITIONS = [
     "In simple terms, ",
 ]
 
+PHRASE_PARAPHRASE_MAP = {
+    "a paragraph is a distinct unit of writing": [
+        "a paragraph forms a separate section of written text",
+        "a paragraph is an independent block of writing",
+    ],
+    "one or more sentences": [
+        "one sentence or several",
+        "a single sentence or a few sentences",
+    ],
+    "single, cohesive idea or topic": [
+        "one consistent theme",
+        "a unified concept",
+    ],
+    "a foundational element of writing": [
+        "a basic building block of written expression",
+        "an essential component of good writing",
+    ],
+    "structure and clarity": [
+        "organization and clarity",
+        "clear structure",
+    ],
+    "usually featuring a topic sentence, supporting details, and a concluding sentence": [
+        "typically including an opening topic sentence, supporting details, and a closing statement",
+        "often containing an opening idea sentence, supporting details, and a final summary sentence",
+    ],
+    "properly organized, paragraphs help readers follow the author's logic and break up text for better readability": [
+        "when arranged well, paragraphs guide the reader through the author's reasoning and separate content for easier reading",
+        "well-structured paragraphs help readers follow the author's logic and split text into more readable sections",
+    ],
+}
+
+
+def apply_phrase_paraphrases(sentence: str) -> str:
+    """Apply longer phrase-based paraphrases to make a sentence more distinct."""
+    text = sentence
+    for phrase, alternatives in PHRASE_PARAPHRASE_MAP.items():
+        lower_text = text.lower()
+        if phrase in lower_text:
+            replacement = random.choice(alternatives)
+            start = lower_text.index(phrase)
+            text = text[:start] + replacement + text[start + len(phrase):]
+            text = normalize_sentence(text)
+    return text
+
 
 # ─────────────────────────────────────────────────────────
 # DATAMUSE API INTEGRATION (Unlimited Vocabulary)
@@ -563,6 +607,9 @@ def get_rewrite_synonyms(word: str, static_only: bool = False) -> list[str]:
     if clean in SYNONYM_MAP:
         synonyms.extend(SYNONYM_MAP[clean])
 
+    if not static_only:
+        synonyms.extend(get_synonyms_for_word(word))
+
     filtered = [s for s in synonyms if re.fullmatch(r"[A-Za-z ]+", s)]
     return list(dict.fromkeys(filtered))
 
@@ -612,18 +659,19 @@ def rewrite_sentence_human(sentence: str, source_sentence: str = "") -> dict:
     words = original.split()
     new_words = []
     replaced = 0
-    max_replacements = 2
+    max_replacements = min(5, max(1, len(words) // 4))
+    source_lower = source_sentence.lower() if source_sentence else ""
 
     for index, word in enumerate(words):
         # Strip punctuation for lookup
         clean = word.lower().rstrip(".,!?;:'\"")
-        trail = word[len(word.rstrip(".,!?;:'\"")):]
+        trail = word[len(word.rstrip(".,!?;:'\"")) :]
 
         # Avoid changing proper nouns, titles, and quoted terms
         if index > 0 and word[0].isupper():
             new_words.append(word)
             continue
-        if word.startswith(('"', "'")) or word.endswith(('"', "'")):
+        if word.startswith(("\"", "'")) or word.endswith(("\"", "'")):
             new_words.append(word)
             continue
 
@@ -633,32 +681,49 @@ def rewrite_sentence_human(sentence: str, source_sentence: str = "") -> dict:
 
         synonyms = get_rewrite_synonyms(word, static_only=static_only)
         if synonyms:
-            if source_sentence:
-                source_lower = source_sentence.lower()
-                safe_synonyms = [s for s in synonyms if s.lower() not in source_lower]
-                chosen = random.choice(safe_synonyms) if safe_synonyms else random.choice(synonyms)
-            else:
-                chosen = random.choice(synonyms)
+            replace_chance = 0.9 if clean in source_lower else 0.65
+            if random.random() < replace_chance or clean in source_lower:
+                if source_sentence:
+                    safe_synonyms = [s for s in synonyms if s.lower() not in source_lower]
+                    chosen = random.choice(safe_synonyms) if safe_synonyms else random.choice(synonyms)
+                else:
+                    chosen = random.choice(synonyms)
 
-            # Preserve capitalization
-            if word and word[0].isupper():
-                chosen = chosen[0].upper() + chosen[1:]
+                # Preserve capitalization
+                if word and word[0].isupper():
+                    chosen = chosen[0].upper() + chosen[1:]
 
-            new_words.append(chosen + trail)
-            replaced += 1
-            if clean != chosen.lower() and f"'{clean}' → '{chosen}'" not in changes:
-                changes.append(f"'{clean}' → '{chosen}'")
-        else:
-            new_words.append(word)
+                new_words.append(chosen + trail)
+                replaced += 1
+                if clean != chosen.lower() and f"'{clean}' → '{chosen}'" not in changes:
+                    changes.append(f"'{clean}' → '{chosen}'")
+                continue
+
+        new_words.append(word)
 
     candidate = " ".join(new_words)
     rewritten = normalize_sentence(candidate)
+    rewritten = apply_phrase_paraphrases(rewritten)
 
-    # If the rewrite is still very close to source, allow a mild structural shuffle
+    # If the rewrite is still very close to the source reference, apply stronger variation.
     if source_sentence:
-        final_sim = compute_text_similarity(rewritten, source_sentence)
-        if final_sim > 0.9:
-            rewritten = normalize_sentence(restructure_sentence(rewritten))
+        source_sim_after = compute_text_similarity(rewritten, source_sentence)
+        input_sim_after = compute_text_similarity(rewritten, original)
+        if source_sim_after > 0.70 or input_sim_after > 0.90:
+            rewritten = try_voice_change(rewritten)
+            rewritten = add_human_phrasing(rewritten)
+            rewritten = normalize_sentence(rewritten)
+            rewritten = apply_phrase_paraphrases(rewritten)
+
+            if compute_text_similarity(rewritten, source_sentence) > source_sim_after:
+                rewritten = normalize_sentence(restructure_sentence(rewritten))
+                rewritten = apply_phrase_paraphrases(rewritten)
+
+    # Attempt to add more variation if the initial rewrite made no replacements.
+    if replaced == 0 and source_sentence:
+        rewritten = add_human_phrasing(rewritten)
+        rewritten = normalize_sentence(rewritten)
+        rewritten = apply_phrase_paraphrases(rewritten)
 
     # Compute final similarity to the plagiarized input
     meaning_similarity = compute_text_similarity(original, rewritten)
@@ -1265,10 +1330,9 @@ def auto_plagiarism_pipeline():
                 best_source = sent_source
         
         is_plag = best_sim >= 0.5
-        if is_plag and best_source:
-            rewrite_result = rewrite_sentence_human(sent_suspected, best_source)
-        else:
-            rewrite_result = rewrite_sentence_human(sent_suspected, best_source)
+        rewrite_subject = sent_suspected
+        rewrite_reference = best_source
+        rewrite_result = rewrite_sentence_human(rewrite_subject, rewrite_reference)
         if not rewrite_result.get("rewrite_method"):
             rewrite_result["rewrite_method"] = "local"
         
