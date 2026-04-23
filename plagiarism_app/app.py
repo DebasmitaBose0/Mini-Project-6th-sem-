@@ -762,7 +762,7 @@ def _apply_aggressive_synonyms(sentence: str, source_sentence: str = "") -> str:
     source_lower = source_sentence.lower() if source_sentence else ""
     new_words = []
     replaced = 0
-    max_rep = max(2, len(words) // 2)  # Replace up to half the words
+    max_rep = len(words)  # Replace as many words as possible
 
     for index, word in enumerate(words):
         clean = word.lower().rstrip(".,!?;:'\"")
@@ -775,7 +775,7 @@ def _apply_aggressive_synonyms(sentence: str, source_sentence: str = "") -> str:
         if word.startswith(("\"", "'")) or word.endswith(("\"", "'")):
             new_words.append(word)
             continue
-        if len(clean) <= 3:
+        if len(clean) <= 2:
             new_words.append(word)
             continue
 
@@ -846,35 +846,57 @@ def rewrite_sentence_human(sentence: str, source_sentence: str = "") -> dict:
 
     # ── Use the new deep paraphrase engine ──
     # Generate multiple candidates and pick the best one
-    changes = ["deep structural paraphrase"]
-    best_rewrite = None
+    changes = ["deep structural paraphrase", "aggressive synonym substitution", "humanized phrasing"]
+    
+    prefetch_synonyms(original)
+    if source_sentence:
+        prefetch_synonyms(source_sentence)
+
+    candidates = []
+    
+    # Candidate 1: Aggressive Synonyms (Datamuse) + Restructure
+    c1 = _apply_aggressive_synonyms(original, source_sentence)
+    c1 = deep_paraphrase_sentence(c1, source_sentence)
+    candidates.append(c1)
+
+    # Candidate 2: Restructure + Aggressive Synonyms
+    c2 = deep_paraphrase_sentence(original, source_sentence)
+    c2 = _apply_aggressive_synonyms(c2, source_sentence)
+    candidates.append(c2)
+
+    # Candidate 3: deep_paraphrase from paraphrase_engine.py + Aggressive Synonyms
+    c3 = deep_paraphrase(original, source_sentence)
+    c3 = _apply_aggressive_synonyms(c3, source_sentence)
+    candidates.append(c3)
+
+    # Candidate 4: Phrase Paraphrase + Aggressive Synonyms + Humanize
+    c4 = apply_phrase_paraphrases(original)
+    c4 = _apply_aggressive_synonyms(c4, source_sentence)
+    human_transitions = ["To put it simply, ", "Essentially, ", "In other words, ", "Basically, ", "Generally speaking, "]
+    if c4 and len(c4.split()) > 4 and random.random() > 0.5:
+        c4 = random.choice(human_transitions) + c4[0].lower() + c4[1:]
+    candidates.append(c4)
+    
+    # Candidate 5: Pure Aggressive Synonyms
+    c5 = _apply_aggressive_synonyms(original, source_sentence)
+    candidates.append(c5)
+
+    best_rewrite = original
     best_sim = float('inf')
 
-    for attempt in range(5):
-        candidate = deep_paraphrase(original, source_sentence)
-        candidate = normalize_sentence(candidate)
-
-        if not candidate or candidate.strip() == "." or len(candidate.strip()) < 10:
+    for cand in candidates:
+        cand = normalize_sentence(cand)
+        if not cand or cand.strip() == "." or len(cand.strip()) < 10:
             continue
 
-        sim = compute_text_similarity(candidate, source_sentence) if source_sentence else compute_text_similarity(candidate, original)
+        sim = compute_text_similarity(cand, source_sentence) if source_sentence else compute_text_similarity(cand, original)
 
         if sim < best_sim:
             best_sim = sim
-            best_rewrite = candidate
+            best_rewrite = cand
 
-        if best_sim < 0.50:
+        if best_sim < 0.35:
             break
-
-    # Fallback: if new engine produced nothing, use synonym-only approach
-    # (NEVER fall back to the old template engine — it distorts meaning)
-    if best_rewrite is None:
-        prefetch_synonyms(original)
-        if source_sentence:
-            prefetch_synonyms(source_sentence)
-        rewritten = _apply_aggressive_synonyms(original, source_sentence)
-        rewritten = normalize_sentence(rewritten)
-        best_rewrite = rewritten
 
     rewritten = best_rewrite
 
@@ -1380,6 +1402,9 @@ def check_plagiarism():
     # Compute similarity between the plagiarized text and the final human-like rewrite
     rewrite_similarity = compute_text_similarity(plagiarized_full_text, rewritten_full_text)
     
+    # Compute similarity between the original source text and the final rewrite
+    source_rewrite_similarity = compute_text_similarity(text1, rewritten_full_text)
+    
     # Recheck the rewritten text against the original source
     recheck_analysis = analyze_pair(text1, rewritten_full_text)
     recheck_score = recheck_analysis["overall_score"]
@@ -1388,6 +1413,7 @@ def check_plagiarism():
     result["plagiarized_text"] = plagiarized_full_text
     result["rewritten_text"] = rewritten_full_text
     result["rewrite_similarity"] = rewrite_similarity
+    result["source_rewrite_similarity"] = source_rewrite_similarity
     result["recheck_score"] = recheck_score
     result["rewrite_engine"] = get_rewrite_engine(sentence_analysis)
     result["total_sentences"] = len(sentences_text2)
@@ -1501,6 +1527,9 @@ def auto_plagiarism_pipeline():
     # Step 4: Verify similarity (reconstructed vs suspected)
     final_similarity = compute_text_similarity(suspected_text, reconstructed_text)
     meaning_preserved_pct = round(final_similarity * 100, 1)
+    
+    # Verify similarity to original source
+    source_rewrite_similarity = compute_text_similarity(original_clean, reconstructed_text)
 
     return jsonify({
         "workflow": "complete",
@@ -1519,6 +1548,7 @@ def auto_plagiarism_pipeline():
         # Step 4
         "similarity_check": {
             "meaning_preserved_pct": meaning_preserved_pct,
+            "source_rewrite_similarity": round(source_rewrite_similarity * 100, 1),
             "status": "excellent" if meaning_preserved_pct > 85 else "good" if meaning_preserved_pct > 70 else "fair"
         }
     })
@@ -1619,6 +1649,9 @@ def compare_corpus():
 
     # Compute similarity between original and rewritten text
     rewrite_similarity = compute_text_similarity(input_text, rewritten_full_text)
+    
+    # Compute similarity between the corpus source and rewritten text
+    source_rewrite_similarity = compute_text_similarity(corpus_text, rewritten_full_text)
 
     # Recheck the rewritten text against the corpus
     recheck_score_total = 0
@@ -1643,6 +1676,7 @@ def compare_corpus():
         "original_text": input_text,
         "rewritten_text": rewritten_full_text,
         "rewrite_similarity": rewrite_similarity,
+        "source_rewrite_similarity": source_rewrite_similarity,
         "recheck_score": recheck_avg_score,
     })
 
