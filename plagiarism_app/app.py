@@ -37,6 +37,8 @@ import urllib.error
 import json
 import ssl
 from concurrent.futures import ThreadPoolExecutor
+from sentence_transformers import SentenceTransformer, util
+similarity_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 # Try loading NLTK for POS tagging
 try:
@@ -334,14 +336,29 @@ def auto_generate_plagiarized(clean_text: str) -> tuple[str, str, dict]:
     else:
         model_used = None
         for sent in sentences:
-            if random.random() < 0.7:  # 70% verbatim copy (plagiarism)
-                plag_sentences.append(sent)
-                verbatim_count += 1
-            else:  # 30% light rewrite (student attempt)
-                light_rewrite = create_light_plagiarism_variant(sent)
-                plag_sentences.append(light_rewrite)
-                rewritten_count += 1
+            # HARD REWRITE: Always paraphrase, never copy verbatim
+            variant = deep_paraphrase(sent, sent)
+            
+            # Fallback 1: If result too similar, try phrase paraphrases
+            if compute_text_similarity(sent, variant) > 0.90:
+                variant = apply_phrase_paraphrases(sent)
+            
+            # Fallback 2: If still too similar, try restructuring
+            if compute_text_similarity(sent, variant) > 0.90:
+                variant = restructure_sentence(sent)
+            
+            # Fallback 3: If still identical, force aggressive synonyms
+            if compute_text_similarity(sent, variant) > 0.90:
+                variant = _apply_aggressive_synonyms(sent, "")
+            
+            plag_sentences.append(variant)
+            rewritten_count += 1
+        
         suspected_text = " ".join(plag_sentences)
+        
+        # FINAL FAILSAFE: If suspected text is identical to clean, force deep rewrite
+        if suspected_text.strip() == clean_text.strip():
+            suspected_text = deep_paraphrase_paragraph(clean_text, clean_text)
 
     stats = {
         "verbatim_sentences": verbatim_count,
@@ -640,48 +657,8 @@ def apply_phrase_paraphrases(sentence: str) -> str:
 WORD_CACHE = {}
 
 def prefetch_synonyms(text: str):
-    """Fetch synonyms for long words in parallel to avoid UI lag."""
-    words = [w for w in text.split()]
-    # Filter words > 3 chars, not proper nouns, and not already cached
-    target_words = []
-    for w in words:
-        clean = w.strip(".,!?;:'\"-()").lower()
-        if len(clean) <= 3:
-            continue
-        if w[0].isupper() and not w.isupper():
-            continue
-        if clean and clean not in WORD_CACHE:
-            target_words.append(clean)
-    target_words = list(set(target_words))
-    
-    if not target_words:
-        return
-        
-    def fetch(word):
-        try:
-            # rel_syn gives much more accurate synonyms than ml (means-like)
-            url = f"https://api.datamuse.com/words?rel_syn={word}&max=10"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            with urllib.request.urlopen(req, context=ctx, timeout=2.0) as response:
-                data = json.loads(response.read().decode('utf-8'))
-                syns = [i['word'] for i in data if " " not in i['word']]
-                
-                # Fallback to ml only if no synonyms found, but keep it very restrictive
-                if not syns:
-                    url_ml = f"https://api.datamuse.com/words?ml={word}&max=3"
-                    with urllib.request.urlopen(urllib.request.Request(url_ml, headers={'User-Agent': 'Mozilla/5.0'}), context=ctx, timeout=1.0) as response_ml:
-                        data_ml = json.loads(response_ml.read().decode('utf-8'))
-                        syns = [i['word'] for i in data_ml if " " not in i['word'] and i.get('score', 0) > 80000]
-                
-                WORD_CACHE[word] = syns
-        except:
-            WORD_CACHE[word] = []
-            
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        list(executor.map(fetch, target_words))
+    """Disabled Datamuse API injection to prevent chaotic gibberish outputs."""
+    pass
 
 
 def get_synonyms_for_word(word: str) -> list[str]:
@@ -718,7 +695,7 @@ def deep_paraphrase_sentence(sentence: str, source_sentence: str = "") -> str:
     """
     Safely paraphrase using the paraphrase_engine logic.
     """
-    return deep_paraphrase(sentence, source_sentence)
+    return deep_paraphrase(sentence)
 
 
 def _apply_aggressive_synonyms(sentence: str, source_sentence: str = "") -> str:
@@ -727,7 +704,7 @@ def _apply_aggressive_synonyms(sentence: str, source_sentence: str = "") -> str:
     source_lower = source_sentence.lower() if source_sentence else ""
     new_words = []
     replaced = 0
-    max_rep = len(words) // 2 + 1  # Don't replace every single word, it breaks flow
+    max_rep = min(2, len(words)//8)  # Don't replace every single word, it breaks flow
 
     # Core English stop words to never replace
     stop_words = {"this", "that", "these", "those", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "and", "but", "if", "or", "because", "as", "until", "while", "of", "at", "by", "for", "with", "about", "against", "between", "into", "through", "during", "before", "after", "above", "below", "to", "from", "up", "down", "in", "out", "on", "off", "over", "under", "again", "further", "then", "once"}
@@ -847,23 +824,27 @@ def rewrite_sentence_human(sentence: str, source_sentence: str = "", strength: i
     if strength >= 2:
         # Candidate 2: Restructure + Aggressive Synonyms
         c2 = deep_paraphrase_sentence(original, source_sentence)
-        c2 = _apply_aggressive_synonyms(c2, source_sentence)
+        # removed synonym-only rewriting
+        # c2 = _apply_aggressive_synonyms(c2, source_sentence)
         candidates.append(c2)
         
         # Candidate 3: Phrase Paraphrase + Synonyms
         c3 = apply_phrase_paraphrases(original)
-        c3 = _apply_aggressive_synonyms(c3, source_sentence)
+        # removed synonym-only rewriting
+        # c3 = _apply_aggressive_synonyms(c3, source_sentence)
         candidates.append(c3)
 
     if strength >= 3:
         # Candidate 4: Aggressive Synonyms + Restructure
-        c4 = _apply_aggressive_synonyms(original, source_sentence)
-        c4 = deep_paraphrase_sentence(c4, source_sentence)
+        # removed synonym-only rewriting
+        # c4 = _apply_aggressive_synonyms(original, source_sentence)
+        c4 = deep_paraphrase_sentence(original, source_sentence)
         candidates.append(c4)
         
         # Candidate 5: deep_paraphrase from engine + Aggressive Synonyms
         c5 = deep_paraphrase(original, source_sentence)
-        c5 = _apply_aggressive_synonyms(c5, source_sentence)
+        # removed synonym-only rewriting
+        # c5 = _apply_aggressive_synonyms(c5, source_sentence)
         candidates.append(c5)
 
     if mode == "humanize_ai":
@@ -893,31 +874,42 @@ def rewrite_sentence_human(sentence: str, source_sentence: str = "", strength: i
 
     rewritten = best_rewrite
     
-    # ── Iterative Rewrite Loop (while plagiarism > 25%) ──
-    # If strength is aggressive (3), we force it to keep trying
-    current_sim = best_sim * 100
-    iterations = 0
-    while current_sim > 25 and iterations < 3 and strength == 3 and source_sentence:
-        # Force another pass
-        next_attempt = _apply_aggressive_synonyms(rewritten, source_sentence)
-        next_attempt = deep_paraphrase_sentence(next_attempt, source_sentence)
-        next_attempt = normalize_sentence(next_attempt)
+    # ── Iterative Anti-Plagiarism Loop (target <30% similarity) ──
+    passes = 0
+    if source_sentence:
+        target_plag = 0.30
+        current_sim = compute_text_similarity(original, rewritten)
+        passes = 0
         
-        new_sim = compute_text_similarity(next_attempt, source_sentence) * 100
-        if new_sim < current_sim and len(next_attempt.split()) > 3:
-            rewritten = next_attempt
+        while current_sim > target_plag and passes < 5:
+            # Pass 1: Restructure
+            rewritten = deep_paraphrase_sentence(rewritten, source_sentence)
+            
+            # Pass 2: Phrase-level paraphrase
+            rewritten = apply_phrase_paraphrases(rewritten)
+            
+            # Pass 3: Very limited synonym swap
+            rewritten = _apply_aggressive_synonyms(rewritten, source_sentence)
+            
+            rewritten = normalize_sentence(rewritten)
+            
+            new_sim = compute_text_similarity(rewritten, source_sentence)
+            
+            if new_sim >= current_sim:
+                break
+            
             current_sim = new_sim
-        iterations += 1
+            passes += 1
 
     # ── Explain Changes Feature ──
     changes = []
     if mode == "humanize_ai":
         changes.append("Applied Humanize AI phrasing")
     
-    if strength == 3:
-        changes.append("Aggressive anti-plagiarism applied")
-        if iterations > 0:
-            changes.append(f"Iterative rewrite loop ({iterations} passes)")
+    # Only show iteration info if we actually performed iterations
+    if source_sentence and passes > 0:
+        changes.append("Iterative rewrite loop applied")
+        changes.append(f"({passes} optimization passes)")
     
     # Find specific synonym swaps for "Explain Changes"
     orig_words = original.lower().split()
@@ -941,6 +933,19 @@ def rewrite_sentence_human(sentence: str, source_sentence: str = "", strength: i
     # Compute final metrics
     meaning_similarity = compute_text_similarity(original, rewritten)
     human_score = 0.60 + (0.30 if mode == "humanize_ai" else 0.15) + (random.random() * 0.1)
+    
+    # Semantic meaning check: ensure meaning is preserved (>85%)
+    try:
+        emb_orig = similarity_model.encode(original, convert_to_tensor=True)
+        emb_rewritten = similarity_model.encode(rewritten, convert_to_tensor=True)
+        semantic_sim = float(util.cos_sim(emb_orig, emb_rewritten)[0][0])
+        
+        if semantic_sim < 0.85:
+            rewritten = original
+    except:
+        # Fallback if semantic model fails
+        if meaning_similarity < 0.30:
+            rewritten = original
     
     source_sim_before = compute_text_similarity(original, source_sentence) if source_sentence else 0
     source_sim_after = compute_text_similarity(rewritten, source_sentence) if source_sentence else 0
@@ -1526,7 +1531,7 @@ def auto_plagiarism_pipeline():
         return jsonify({"error": "No JSON data provided"}), 400
 
     clean_text = data.get("clean_text", "").strip()
-    strength = data.get("strength", 2)
+    strength = data.get("strength", 3)
     mode = data.get("mode", "remove_plagiarism")
     
     if not clean_text:
@@ -1579,7 +1584,7 @@ def auto_plagiarism_pipeline():
     # Verify similarity to original source
     source_rewrite_similarity = compute_text_similarity(original_clean, reconstructed_text)
     
-    humanization_score = round(sum(s["rewrite"].get("humanization_score", 0) for s in sentence_analysis if s["is_plagiarized"]) / max(1, sum(1 for s in sentence_analysis if s["is_plagiarized"])) * 100, 1)
+    humanization_score = round(sum(r["rewrite"].get("humanization_score", 0) for r in sentence_analysis if r["is_plagiarized"]) / max(1, sum(1 for r in sentence_analysis if r["is_plagiarized"])) * 100, 1)
 
     return jsonify({
         "workflow": "complete",
